@@ -1,10 +1,15 @@
 package libcontainer
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"io/ioutil"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -99,6 +104,65 @@ func (c *freebsdContainer) Start(process *Process) (err error) {
 func (c *freebsdContainer) start(process *Process, isInit bool) error {
 	// generate a timestamp indicating when the container was started
 	c.created = time.Now().UTC()
+
+	var (
+		cmdBuf bytes.Buffer
+		conf string
+	)
+	for _, v := range process.Args {
+		if cmdBuf.Len() > 0 {
+			cmdBuf.WriteString(" ")
+		}
+		cmdBuf.WriteString(v)
+	}
+	params := map[string]string {
+		"exec.clean":"true",
+		"exec.start": "/bin/sh /etc/rc",
+		"exec.stop": "/bin/sh /etc/rc.shutdown",
+		"host.hostname": c.id,
+		"path": c.config.Rootfs,
+		"command": cmdBuf.String(),
+	}
+	lines := make([]string, 0, len(params))
+	for k, v := range params {
+		lines = append(lines, fmt.Sprintf("	%v=%#v;", k, v))
+	}
+	sort.Strings(lines)
+	conf = fmt.Sprintf("%v {\n%v\n}\n", c.id, strings.Join(lines, "\n"))
+	jailConfPath := filepath.Join(c.root, "jail.conf")
+	if _, err := os.Stat(jailConfPath); err == nil {
+		os.Remove(jailConfPath)
+	}
+	if err := ioutil.WriteFile(jailConfPath, []byte(conf), 0400); err != nil {
+		fmt.Println("Fail to create jail conf %s", jailConfPath)
+		return nil
+	}
+	// timeout after 5s
+	ctx, cancel := context.WithTimeout(context.Background(), 5000 * time.Millisecond)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "/usr/sbin/jail", "-f", jailConfPath, "-c")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		fmt.Println("Fail to execute jail -f %s -c", jailConfPath)
+		return nil
+	}
+	var (
+		waitErr error
+		waitLock = make(chan struct{})
+	)
+	go func() {
+		if err := cmd.Wait(); err != nil {
+			if _, ok := err.(*exec.ExitError); !ok {
+				waitErr = err
+			}
+		}
+		close(waitLock)
+		c.state = &runningState{
+			c: c,
+		}
+	}()
+	<-waitLock
 	return nil
 }
 
@@ -114,7 +178,7 @@ func (c *freebsdContainer) Run(process *Process) (err error) {
 		return err
 	}
 	if status == Stopped {
-		return c.exec()
+		//return c.exec()
 	}
 	return nil
 }
