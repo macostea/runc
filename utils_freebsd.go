@@ -9,11 +9,12 @@ import (
 	"syscall"
 
 	"github.com/Sirupsen/logrus"
-	"github.com/coreos/go-systemd/activation"
+	//"github.com/coreos/go-systemd/activation"
 	"github.com/opencontainers/runc/libcontainer"
 	"github.com/opencontainers/runc/libcontainer/specconv"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/urfave/cli"
+	_"net/http/pprof"
 )
 
 var errEmptyID = errors.New("container id cannot be empty")
@@ -97,16 +98,10 @@ func startContainer(context *cli.Context, spec *specs.Spec, action CtAct, criuOp
 	if err != nil {
 		return -1, err
 	}
-	// Support on-demand socket activation by passing file descriptors into the container init process.
-	listenFDs := []*os.File{}
-	if os.Getenv("LISTEN_FDS") != "" {
-		listenFDs = activation.Files(false)
-	}
 	r := &runner{
 		enableSubreaper: !context.Bool("no-subreaper"),
 		shouldDestroy:   true,
 		container:       container,
-		listenFDs:       listenFDs,
 		consoleSocket:   context.String("console-socket"),
 		detach:          context.Bool("detach"),
 		pidFile:         context.String("pid-file"),
@@ -151,7 +146,6 @@ type runner struct {
 	enableSubreaper bool
 	shouldDestroy   bool
 	detach          bool
-	listenFDs       []*os.File
 	preserveFDs     int
 	pidFile         string
 	consoleSocket   string
@@ -183,26 +177,6 @@ func (r *runner) run(config *specs.Process) (int, error) {
 		r.destroy()
 		return -1, err
 	}
-	if len(r.listenFDs) > 0 {
-		process.Env = append(process.Env, fmt.Sprintf("LISTEN_FDS=%d", len(r.listenFDs)), "LISTEN_PID=1")
-		process.ExtraFiles = append(process.ExtraFiles, r.listenFDs...)
-	}
-	baseFd := 3 + len(process.ExtraFiles)
-	for i := baseFd; i < baseFd+r.preserveFDs; i++ {
-		process.ExtraFiles = append(process.ExtraFiles, os.NewFile(uintptr(i), "PreserveFD:"+strconv.Itoa(i)))
-	}
-	/*
-	rootuid, err := r.container.Config().HostRootUID()
-	if err != nil {
-		r.destroy()
-		return -1, err
-	}
-	rootgid, err := r.container.Config().HostRootGID()
-	if err != nil {
-		r.destroy()
-		return -1, err
-	}
-	*/
 	var (
 		detach = r.detach || (r.action == CT_ACT_CREATE)
 	)

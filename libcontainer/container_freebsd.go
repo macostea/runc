@@ -2,7 +2,7 @@ package libcontainer
 
 import (
 	"bytes"
-	"context"
+	//"context"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/opencontainers/runc/libcontainer/configs"
-	"github.com/opencontainers/runc/libcontainer/system"
+	//"github.com/opencontainers/runc/libcontainer/system"
 	"github.com/opencontainers/runc/libcontainer/utils"
 )
 
@@ -23,7 +23,7 @@ type freebsdContainer struct {
 	id                   string
 	root                 string
 	config               *configs.Config
-	initProcess          parentProcess
+	jailId               string
 	initProcessStartTime string
 	m                    sync.Mutex
 	state                containerState
@@ -57,11 +57,15 @@ func (c *freebsdContainer) ID() string {
 }
 
 func (c *freebsdContainer) Status() (Status, error) {
-	return 0, nil
+	c.m.Lock()
+	defer c.m.Unlock()
+	return c.currentStatus()
 }
 
 func (c *freebsdContainer) State() (*State, error) {
-	return nil, nil
+	c.m.Lock()
+	defer c.m.Unlock()
+	return c.currentState()
 }
 
 func (c *freebsdContainer) Config() configs.Config {
@@ -80,6 +84,19 @@ func (c *freebsdContainer) Set(config configs.Config) error {
 	return nil
 }
 
+func (c *freebsdContainer) markCreated() (err error) {
+	c.created = time.Now().UTC()
+	c.state = &createdState{
+		c: c,
+	}
+	state, err := c.updateState()
+	if err != nil {
+		return err
+	}
+	c.initProcessStartTime = state.InitProcessStartTime
+	return nil
+}
+
 func (c *freebsdContainer) Start(process *Process) (err error) {
 	c.m.Lock()
 	defer c.m.Unlock()
@@ -91,8 +108,9 @@ func (c *freebsdContainer) Start(process *Process) (err error) {
 		if err := c.createExecFifo(); err != nil {
 			return err
 		}
+		c.markCreated()
 	}
-	if err := c.start(process, status == Stopped); err != nil {
+	if err := c.start(process); err != nil {
 		if status == Stopped {
 			c.deleteExecFifo()
 		}
@@ -101,13 +119,50 @@ func (c *freebsdContainer) Start(process *Process) (err error) {
 	return nil
 }
 
-func (c *freebsdContainer) start(process *Process, isInit bool) error {
+func (c *freebsdContainer) getJailId(jname string) string {
+	cmd := exec.Command("/usr/sbin/jls", "jid", "name")
+	var out bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return ""
+	}
+	result := strings.Split(out.String(), "\n")
+	for i := range result {
+		if len(result[i]) > 0 {
+			line := strings.Split(result[i], " ")
+			if line[1] == jname {
+				return line[0]
+			}
+		}
+	}
+	return ""
+}
+
+func (c *freebsdContainer) getInitProcessTime(jid string) (string, error) {
+	cmd := exec.Command("/usr/sbin/jexec", "jid", fmt.Sprintf("/bin/cat %s", filepath.Join("/", launchTmStampFilename)))
+	var out bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+	return out.String(), nil
+}
+
+func (c *freebsdContainer) start(process *Process) error {
 	// generate a timestamp indicating when the container was started
 	c.created = time.Now().UTC()
 
 	var (
-		cmdBuf bytes.Buffer
-		conf string
+		cmdBuf   bytes.Buffer
+		conf     string
+		jailStart string
+		jailStop string
+		devRelPath string
+		devAbsPath string
 	)
 	for _, v := range process.Args {
 		if cmdBuf.Len() > 0 {
@@ -115,13 +170,25 @@ func (c *freebsdContainer) start(process *Process, isInit bool) error {
 		}
 		cmdBuf.WriteString(v)
 	}
-	params := map[string]string {
-		"exec.clean":"true",
-		"exec.start": "/bin/sh /etc/rc",
-		"exec.stop": "/bin/sh /etc/rc.shutdown",
+	jailStart = fmt.Sprintf("/bin/sh /etc/rc; /bin/echo 0 > /%s; /bin/date +%s > /%s",
+		execFifoFilename, "%Y%m%d%H%M%S", launchTmStampFilename)
+	jailStop = fmt.Sprintf("/bin/rm %s; /bin/sh /etc/rc.shutdown",
+		launchTmStampFilename)
+	params := map[string]string{
+		"exec.clean":    "true",
+		"exec.start":    jailStart,
+		"exec.stop":     jailStop,
 		"host.hostname": c.id,
-		"path": c.config.Rootfs,
-		"command": cmdBuf.String(),
+		"path":          c.config.Rootfs,
+		"command":       cmdBuf.String(),
+	}
+	devRelPath = filepath.Join(c.config.Rootfs, "dev")
+	if devDir, err := os.Stat(devRelPath); err == nil {
+		if devDir.IsDir() {
+			devAbsPath, _ = filepath.Abs(devRelPath)
+			params["mount.devfs"] = "true"
+			params["exec.prestop"] = fmt.Sprintf("/sbin/umount %s", devAbsPath)
+		}
 	}
 	lines := make([]string, 0, len(params))
 	for k, v := range params {
@@ -138,9 +205,11 @@ func (c *freebsdContainer) start(process *Process, isInit bool) error {
 		return nil
 	}
 	// timeout after 5s
-	ctx, cancel := context.WithTimeout(context.Background(), 5000 * time.Millisecond)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "/usr/sbin/jail", "-f", jailConfPath, "-c")
+	//ctx, cancel := context.WithTimeout(context.Background(), 5000*time.Millisecond)
+	//defer cancel()
+	jidPath := filepath.Join(c.root, "jid")
+	//cmd := exec.CommandContext(ctx, "/usr/sbin/jail", "-J", jidPath, "-f", jailConfPath, "-c")
+	cmd := exec.Command("/usr/sbin/jail", "-J", jidPath, "-f", jailConfPath, "-c")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -148,8 +217,8 @@ func (c *freebsdContainer) start(process *Process, isInit bool) error {
 		return nil
 	}
 	var (
-		waitErr error
-		waitLock = make(chan struct{})
+		waitErr  error
+		jailStarted = make(chan bool)
 	)
 	go func() {
 		if err := cmd.Wait(); err != nil {
@@ -157,13 +226,20 @@ func (c *freebsdContainer) start(process *Process, isInit bool) error {
 				waitErr = err
 			}
 		}
-		close(waitLock)
-		c.state = &runningState{
+		jailStarted <- true
+	}()
+	<-jailStarted
+	if waitErr == nil {
+		c.state = &runningState {
 			c: c,
 		}
-	}()
-	<-waitLock
-	return nil
+		c.jailId = c.getJailId(c.id)
+	} else {
+		c.state = &stoppedState {
+			c: c,
+		}
+	}
+	return waitErr
 }
 
 func (c *freebsdContainer) Run(process *Process) (err error) {
@@ -174,17 +250,41 @@ func (c *freebsdContainer) Run(process *Process) (err error) {
 		return err
 	}
 	c.m.Unlock()
+	if status == Stopped {
+		go c.exec()
+	}
 	if err := c.Start(process); err != nil {
 		return err
-	}
-	if status == Stopped {
-		//return c.exec()
 	}
 	return nil
 }
 
 func (c *freebsdContainer) Destroy() error {
-	return nil
+	c.m.Lock()
+	defer c.m.Unlock()
+	if c.jailId != "" {
+		cmd := exec.Command("/usr/sbin/jail", "-r", c.jailId)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Start(); err != nil {
+			fmt.Println("Fail to stop jail %s", c.jailId)
+			return nil
+		}
+		var (
+			waitErr  error
+			jailStopped = make(chan bool)
+		)
+		go func() {
+			if err := cmd.Wait(); err != nil {
+				if _, ok := err.(*exec.ExitError); !ok {
+					waitErr = err
+				}
+			}
+			jailStopped <- true
+		}()
+		<-jailStopped
+	}
+	return c.state.destroy()
 }
 
 func (c *freebsdContainer) Signal(s os.Signal, all bool) error {
@@ -201,9 +301,10 @@ func (c *freebsdContainer) createExecFifo() error {
 		return err
 	}
 
-	fifoName := filepath.Join(c.root, execFifoFilename)
+	fifoName := filepath.Join(c.config.Rootfs, execFifoFilename)
 	if _, err := os.Stat(fifoName); err == nil {
-		return fmt.Errorf("exec fifo %s already exists", fifoName)
+		c.deleteExecFifo()
+		fmt.Errorf("exec fifo %s already exists", fifoName)
 	}
 	oldMask := syscall.Umask(0000)
 	if err := syscall.Mkfifo(fifoName, 0622); err != nil {
@@ -218,7 +319,7 @@ func (c *freebsdContainer) createExecFifo() error {
 }
 
 func (c *freebsdContainer) deleteExecFifo() {
-	fifoName := filepath.Join(c.root, execFifoFilename)
+	fifoName := filepath.Join(c.config.Rootfs, execFifoFilename)
 	os.Remove(fifoName)
 }
 
@@ -229,7 +330,7 @@ func (c *freebsdContainer) Exec() error {
 }
 
 func (c *freebsdContainer) exec() error {
-	path := filepath.Join(c.root, execFifoFilename)
+	path := filepath.Join(c.config.Rootfs, execFifoFilename)
 	f, err := os.OpenFile(path, os.O_RDONLY, 0)
 	if err != nil {
 		return newSystemErrorWithCause(err, "open exec fifo for reading")
@@ -250,10 +351,10 @@ func (c *freebsdContainer) exec() error {
 // as the initial one, it could happen that the original process has exited
 // and a new process has been created with the same pid, in this case, the
 // container would already be stopped.
-func (c *freebsdContainer) doesInitProcessExist(initPid int) (bool, error) {
-	startTime, err := system.GetProcessStartTime(initPid)
+func (c *freebsdContainer) doesInitProcessExist() (bool, error) {
+	startTime, err := c.getInitProcessTime(c.jailId)
 	if err != nil {
-		return false, newSystemErrorWithCausef(err, "getting init process %d start time", initPid)
+		return false, newSystemErrorWithCause(err, "getting init process %d start time")
 	}
 	if c.initProcessStartTime != startTime {
 		return false, nil
@@ -262,35 +363,23 @@ func (c *freebsdContainer) doesInitProcessExist(initPid int) (bool, error) {
 }
 
 func (c *freebsdContainer) runType() (Status, error) {
-	if c.initProcess == nil {
+	if c.jailId == "" {
 		return Stopped, nil
 	}
-	pid := c.initProcess.pid()
-	// return Running if the init process is alive
-	if err := syscall.Kill(pid, 0); err != nil {
-		if err == syscall.ESRCH {
-			// It means the process does not exist anymore, could happen when the
-			// process exited just when we call the function, we should not return
-			// error in this case.
-			return Stopped, nil
-		}
-		return Stopped, newSystemErrorWithCausef(err, "sending signal 0 to pid %d", pid)
-	}
 	// check if the process is still the original init process.
-	exist, err := c.doesInitProcessExist(pid)
+	exist, err := c.doesInitProcessExist()
 	if !exist || err != nil {
 		return Stopped, err
 	}
 	// We'll create exec fifo and blocking on it after container is created,
 	// and delete it after start container.
-	if _, err := os.Stat(filepath.Join(c.root, execFifoFilename)); err == nil {
+	if _, err := os.Stat(filepath.Join(c.config.Rootfs, execFifoFilename)); err == nil {
 		return Created, nil
 	}
 	return Running, nil
 }
 
-func (c *freebsdContainer) updateState(process parentProcess) (*State, error) {
-	c.initProcess = process
+func (c *freebsdContainer) updateState() (*State, error) {
 	state, err := c.currentState()
 	if err != nil {
 		return nil, err
@@ -322,27 +411,22 @@ func (c *freebsdContainer) isPaused() (bool, error) {
 
 func (c *freebsdContainer) currentState() (*State, error) {
 	var (
-		startTime           string
-		pid                 = -1
+		startTime string
 	)
-	if c.initProcess != nil {
-		pid = c.initProcess.pid()
-		startTime, _ = c.initProcess.startTime()
-		//externalDescriptors = c.initProcess.externalDescriptors()
+	if c.jailId != "" {
+		startTime, _ = c.getInitProcessTime(c.jailId)
 	}
 	state := &State{
 		BaseState: BaseState{
 			ID:                   c.ID(),
 			Config:               *c.config,
-			InitProcessPid:       pid,
 			InitProcessStartTime: startTime,
 			Created:              c.created,
 		},
-		Rootless:            c.config.Rootless,
+		Rootless: c.config.Rootless,
 	}
 	return state, nil
 }
-
 
 func (c *freebsdContainer) currentStatus() (Status, error) {
 	if err := c.refreshState(); err != nil {

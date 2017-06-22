@@ -12,6 +12,7 @@ import (
 const (
 	stateFilename    = "state.json"
 	execFifoFilename = "exec.fifo"
+	launchTmStampFilename = "launch.timestamp"
 )
 
 type FreeBSDFactory struct {
@@ -77,12 +78,13 @@ func (l *FreeBSDFactory) Load(id string) (Container, error) {
 	if err != nil {
 		return nil, err
 	}
+	/*
 	r := &nonChildProcess{
 		processPid:       state.InitProcessPid,
 		processStartTime: state.InitProcessStartTime,
 	}
+	*/
 	c := &freebsdContainer{
-		initProcess:          r,
 		initProcessStartTime: state.InitProcessStartTime,
 		id:                   id,
 		config:               &state.Config,

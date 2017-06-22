@@ -10,10 +10,10 @@ var (
 	deleteCommand     cli.Command
 	execCommand       cli.Command
 	initCommand       cli.Command
-	listCommand       cli.Command
+	//listCommand       cli.Command
 	pauseCommand      cli.Command
 	resumeCommand     cli.Command
-	stateCommand      cli.Command
+	//stateCommand      cli.Command
 	psCommand         cli.Command
 	updateCommand     cli.Command
 )

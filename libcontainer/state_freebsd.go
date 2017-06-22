@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"syscall"
+	//"syscall"
 
 	"github.com/opencontainers/runc/libcontainer/configs"
 	"github.com/opencontainers/runc/libcontainer/utils"
@@ -35,7 +35,6 @@ type containerState interface {
 }
 
 func destroy(c *freebsdContainer) error {
-	c.initProcess = nil
 	err := runPoststopHooks(c)
 	c.state = &stoppedState{c: c}
 	return err
@@ -142,7 +141,7 @@ func (i *createdState) transition(s containerState) error {
 }
 
 func (i *createdState) destroy() error {
-	i.c.initProcess.signal(syscall.SIGKILL)
+	i.c.Destroy()
 	return destroy(i.c)
 }
 

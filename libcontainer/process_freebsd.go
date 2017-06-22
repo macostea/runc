@@ -9,7 +9,7 @@ import (
 
 	"github.com/opencontainers/runc/libcontainer/system"
 )
-
+/*
 type parentProcess interface {
 	// pid returns the pid for the running process.
 	pid() int
@@ -32,7 +32,7 @@ type parentProcess interface {
 
 	setExternalDescriptors(fds []string)
 }
-
+*/
 type initProcess struct {
 	cmd           *exec.Cmd
 	parentPipe    *os.File
