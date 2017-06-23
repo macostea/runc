@@ -2,7 +2,7 @@ package libcontainer
 
 import (
 	"bytes"
-	//"context"
+	"context"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -25,6 +25,7 @@ type freebsdContainer struct {
 	config               *configs.Config
 	jailId               string
 	initProcessStartTime string
+	devPartition         string
 	m                    sync.Mutex
 	state                containerState
 	created              time.Time
@@ -34,6 +35,7 @@ type freebsdContainer struct {
 type State struct {
 	BaseState
 
+	JailId string `json:"jailid"`
 	// Platform specific fields below here
 
 	// Specifies if the container was started under the rootless mode.
@@ -141,7 +143,7 @@ func (c *freebsdContainer) getJailId(jname string) string {
 }
 
 func (c *freebsdContainer) getInitProcessTime(jid string) (string, error) {
-	cmd := exec.Command("/usr/sbin/jexec", "jid", fmt.Sprintf("/bin/cat %s", filepath.Join("/", launchTmStampFilename)))
+	cmd := exec.Command("/usr/sbin/jexec", jid, "/bin/cat", filepath.Join("/", launchTmStampFilename))
 	var out bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &out
@@ -153,14 +155,12 @@ func (c *freebsdContainer) getInitProcessTime(jid string) (string, error) {
 }
 
 func (c *freebsdContainer) start(process *Process) error {
-	// generate a timestamp indicating when the container was started
-	c.created = time.Now().UTC()
-
+	c.markCreated()
 	var (
-		cmdBuf   bytes.Buffer
-		conf     string
-		jailStart string
-		jailStop string
+		cmdBuf     bytes.Buffer
+		conf       string
+		jailStart  string
+		jailStop   string
 		devRelPath string
 		devAbsPath string
 	)
@@ -187,7 +187,8 @@ func (c *freebsdContainer) start(process *Process) error {
 		if devDir.IsDir() {
 			devAbsPath, _ = filepath.Abs(devRelPath)
 			params["mount.devfs"] = "true"
-			params["exec.prestop"] = fmt.Sprintf("/sbin/umount %s", devAbsPath)
+			c.devPartition = devAbsPath
+			//params["exec.prestop"] = fmt.Sprintf("/sbin/umount %s", devAbsPath)
 		}
 	}
 	lines := make([]string, 0, len(params))
@@ -205,11 +206,11 @@ func (c *freebsdContainer) start(process *Process) error {
 		return nil
 	}
 	// timeout after 5s
-	//ctx, cancel := context.WithTimeout(context.Background(), 5000*time.Millisecond)
-	//defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	jidPath := filepath.Join(c.root, "jid")
-	//cmd := exec.CommandContext(ctx, "/usr/sbin/jail", "-J", jidPath, "-f", jailConfPath, "-c")
-	cmd := exec.Command("/usr/sbin/jail", "-J", jidPath, "-f", jailConfPath, "-c")
+	cmd := exec.CommandContext(ctx, "/usr/sbin/jail", "-J", jidPath, "-f", jailConfPath, "-c")
+	//cmd := exec.Command("/usr/sbin/jail", "-J", jidPath, "-f", jailConfPath, "-c")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -217,7 +218,7 @@ func (c *freebsdContainer) start(process *Process) error {
 		return nil
 	}
 	var (
-		waitErr  error
+		waitErr     error
 		jailStarted = make(chan bool)
 	)
 	go func() {
@@ -229,16 +230,27 @@ func (c *freebsdContainer) start(process *Process) error {
 		jailStarted <- true
 	}()
 	<-jailStarted
-	if waitErr == nil {
-		c.state = &runningState {
+
+	if waitErr == nil && ctx.Err() != context.DeadlineExceeded {
+		c.state = &runningState{
 			c: c,
 		}
 		c.jailId = c.getJailId(c.id)
 	} else {
-		c.state = &stoppedState {
-			c: c,
+		if ctx.Err() == context.DeadlineExceeded {
+			return ctx.Err()
+		} else {
+			c.state = &stoppedState{
+				c: c,
+			}
+			return waitErr
 		}
 	}
+	state, err := c.updateState()
+	if err != nil {
+		return err
+	}
+	c.initProcessStartTime = state.InitProcessStartTime
 	return waitErr
 }
 
@@ -259,30 +271,45 @@ func (c *freebsdContainer) Run(process *Process) (err error) {
 	return nil
 }
 
+func (c *freebsdContainer) execWrapper(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		fmt.Println("Fail to exec %s", name)
+		return nil
+	}
+	var (
+		waitErr error
+		done    = make(chan bool)
+	)
+	go func() {
+		if err := cmd.Wait(); err != nil {
+			if _, ok := err.(*exec.ExitError); !ok {
+				waitErr = err
+			}
+		}
+		done <- true
+	}()
+	<-done
+	return waitErr
+}
+
 func (c *freebsdContainer) Destroy() error {
 	c.m.Lock()
 	defer c.m.Unlock()
 	if c.jailId != "" {
-		cmd := exec.Command("/usr/sbin/jail", "-r", c.jailId)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Start(); err != nil {
-			fmt.Println("Fail to stop jail %s", c.jailId)
-			return nil
+		if err := c.execWrapper("/usr/sbin/jail", "-r", c.jailId); err != nil {
+			fmt.Println("Fail to stop jail")
 		}
-		var (
-			waitErr  error
-			jailStopped = make(chan bool)
-		)
-		go func() {
-			if err := cmd.Wait(); err != nil {
-				if _, ok := err.(*exec.ExitError); !ok {
-					waitErr = err
-				}
+		if c.devPartition != "" {
+			if err := c.execWrapper("/sbin/umount", c.devPartition); err != nil {
+				fmt.Println("Fail to umount %s", c.devPartition)
 			}
-			jailStopped <- true
-		}()
-		<-jailStopped
+		}
+		c.jailId = ""
+	} else {
+		fmt.Println("Error: no jail id")
 	}
 	return c.state.destroy()
 }
@@ -354,7 +381,7 @@ func (c *freebsdContainer) exec() error {
 func (c *freebsdContainer) doesInitProcessExist() (bool, error) {
 	startTime, err := c.getInitProcessTime(c.jailId)
 	if err != nil {
-		return false, newSystemErrorWithCause(err, "getting init process %d start time")
+		return false, newSystemErrorWithCause(err, "getting container start time")
 	}
 	if c.initProcessStartTime != startTime {
 		return false, nil
@@ -423,6 +450,7 @@ func (c *freebsdContainer) currentState() (*State, error) {
 			InitProcessStartTime: startTime,
 			Created:              c.created,
 		},
+		JailId:   c.jailId,
 		Rootless: c.config.Rootless,
 	}
 	return state, nil

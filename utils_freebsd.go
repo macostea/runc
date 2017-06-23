@@ -100,7 +100,7 @@ func startContainer(context *cli.Context, spec *specs.Spec, action CtAct, criuOp
 	}
 	r := &runner{
 		enableSubreaper: !context.Bool("no-subreaper"),
-		shouldDestroy:   true,
+		shouldDestroy:   false,
 		container:       container,
 		consoleSocket:   context.String("console-socket"),
 		detach:          context.Bool("detach"),
@@ -138,6 +138,7 @@ func newProcess(p specs.Process) (*libcontainer.Process, error) {
 
 func destroy(container libcontainer.Container) {
 	if err := container.Destroy(); err != nil {
+		fmt.Println(err)
 		logrus.Error(err)
 	}
 }

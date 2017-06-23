@@ -78,15 +78,10 @@ func (l *FreeBSDFactory) Load(id string) (Container, error) {
 	if err != nil {
 		return nil, err
 	}
-	/*
-	r := &nonChildProcess{
-		processPid:       state.InitProcessPid,
-		processStartTime: state.InitProcessStartTime,
-	}
-	*/
 	c := &freebsdContainer{
 		initProcessStartTime: state.InitProcessStartTime,
 		id:                   id,
+		jailId:	              state.JailId,
 		config:               &state.Config,
 		root:                 containerRoot,
 		created:              state.Created,
