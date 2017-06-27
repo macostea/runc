@@ -35,7 +35,6 @@ type containerState interface {
 }
 
 func destroy(c *freebsdContainer) error {
-	fmt.Println("start to remove all %s", c.root)
 	err := os.RemoveAll(c.root)
 	if herr := runPoststopHooks(c); err == nil {
 		err = herr
