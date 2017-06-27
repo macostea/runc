@@ -14,7 +14,7 @@ import (
 	"github.com/opencontainers/runc/libcontainer/specconv"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/urfave/cli"
-	_"net/http/pprof"
+	_ "net/http/pprof"
 )
 
 var errEmptyID = errors.New("container id cannot be empty")
@@ -153,7 +153,7 @@ type runner struct {
 	container       libcontainer.Container
 	action          CtAct
 	//notifySocket    *notifySocket
-	criuOpts        *libcontainer.CriuOpts
+	criuOpts *libcontainer.CriuOpts
 }
 
 func (r *runner) checkTerminal(config *specs.Process) error {
@@ -219,6 +219,7 @@ func (r *runner) terminate(p *libcontainer.Process) {
 	_ = p.Signal(syscall.SIGKILL)
 	_, _ = p.Wait()
 }
+
 // createPidFile creates a file with the processes pid inside it atomically
 // it creates a temp file with the paths filename + '.' infront of it
 // then renames the file

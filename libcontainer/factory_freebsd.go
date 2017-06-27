@@ -10,9 +10,10 @@ import (
 )
 
 const (
-	stateFilename    = "state.json"
-	execFifoFilename = "exec.fifo"
+	stateFilename         = "state.json"
+	execFifoFilename      = "exec.fifo"
 	launchTmStampFilename = "launch.timestamp"
+	initCmdPidFilename    = "init.pid"
 )
 
 type FreeBSDFactory struct {
@@ -79,9 +80,11 @@ func (l *FreeBSDFactory) Load(id string) (Container, error) {
 		return nil, err
 	}
 	c := &freebsdContainer{
+		initProcessPid:       state.InitProcessPid,
 		initProcessStartTime: state.InitProcessStartTime,
 		id:                   id,
-		jailId:	              state.JailId,
+		jailId:               state.JailId,
+		devPartition:         state.DevPart,
 		config:               &state.Config,
 		root:                 containerRoot,
 		created:              state.Created,

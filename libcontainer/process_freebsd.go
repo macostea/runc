@@ -9,6 +9,7 @@ import (
 
 	"github.com/opencontainers/runc/libcontainer/system"
 )
+
 /*
 type parentProcess interface {
 	// pid returns the pid for the running process.
@@ -34,9 +35,9 @@ type parentProcess interface {
 }
 */
 type initProcess struct {
-	cmd           *exec.Cmd
-	parentPipe    *os.File
-	childPipe     *os.File
+	cmd        *exec.Cmd
+	parentPipe *os.File
+	childPipe  *os.File
 	//config        *initConfig
 	container     *freebsdContainer
 	fds           []string
@@ -91,10 +92,10 @@ func (p *initProcess) wait() (*os.ProcessState, error) {
 		return p.cmd.ProcessState, err
 	}
 	/*
-	// we should kill all processes in cgroup when init is died if we use host PID namespace
-	if p.sharePidns {
-		signalAllProcesses(p.manager, syscall.SIGKILL)
-	}
+		// we should kill all processes in cgroup when init is died if we use host PID namespace
+		if p.sharePidns {
+			signalAllProcesses(p.manager, syscall.SIGKILL)
+		}
 	*/
 	return p.cmd.ProcessState, nil
 }
@@ -113,6 +114,7 @@ func (p *initProcess) terminate() error {
 func (p *initProcess) startTime() (string, error) {
 	return system.GetProcessStartTime(p.pid())
 }
+
 /*
 func (p *initProcess) sendConfig() error {
 	// send the config to the container's init process, we don't use JSON Encode
@@ -132,4 +134,3 @@ func (p *initProcess) signal(sig os.Signal) error {
 func (p *initProcess) setExternalDescriptors(newFds []string) {
 	p.fds = newFds
 }
-
