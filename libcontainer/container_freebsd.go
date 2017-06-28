@@ -2,6 +2,7 @@ package libcontainer
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -51,7 +52,7 @@ type Container interface {
 	BaseContainer
 
 	// Methods below here are platform specific
-
+	ExecInContainer(name string, args ...string) (string, error)
 }
 
 func (c *freebsdContainer) ID() string {
@@ -75,7 +76,27 @@ func (c *freebsdContainer) Config() configs.Config {
 }
 
 func (c *freebsdContainer) Processes() ([]int, error) {
-	return nil, nil
+	var pids[] int
+        cmd := exec.Command("/bin/ps", "ax", "-o", "jid,pid")
+        output, err := cmd.CombinedOutput()
+        if err != nil {
+                return nil, err
+        }
+        lines := strings.Split(string(output), "\n")
+        for _, line := range lines[1:] {
+                if len(line) == 0 {
+                        continue
+                }
+                fields := strings.Fields(line)
+                if fields[0] == c.jailId {
+			pid, err := strconv.Atoi(fields[1])
+			if err != nil {
+				return nil, fmt.Errorf("unexpected pid '%s': %s", fields[1], err)
+			}
+			pids = append(pids, pid)
+                }
+        }
+	return pids, nil
 }
 
 func (c *freebsdContainer) Stats() (*Stats, error) {
@@ -84,6 +105,23 @@ func (c *freebsdContainer) Stats() (*Stats, error) {
 
 func (c *freebsdContainer) Set(config configs.Config) error {
 	return nil
+}
+
+func (c *freebsdContainer) ExecInContainer(name string, args ...string) (string, error) {
+	if !c.isJailExisted(c.id, c.jailId) {
+		return "", fmt.Errorf("container %s with jail Id %s has been removed", c.id, c.jailId)
+	}
+	argsNew := make([]string, 2 + len(args))
+	argsNew[0] = c.jailId
+	argsNew[1] = name
+	for i := 0; i < len(args); i++ {
+		argsNew[i+2] = args[i]
+	}
+	out, err := c.execWrapper("/usr/sbin/jexec", argsNew...)
+	if err != nil {
+		return "", err
+	}
+	return out, nil
 }
 
 func (c *freebsdContainer) markCreated() (err error) {
@@ -137,15 +175,11 @@ func (c *freebsdContainer) Start(process *Process) (err error) {
 }
 
 func (c *freebsdContainer) getJailId(jname string) string {
-	cmd := exec.Command("/usr/sbin/jls", "jid", "name")
-	var out bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	out, err := c.execWrapper("/usr/sbin/jls", "jid", "name")
+	if err != nil {
 		return ""
 	}
-	result := strings.Split(out.String(), "\n")
+	result := strings.Split(out, "\n")
 	for i := range result {
 		if len(result[i]) > 0 {
 			line := strings.Split(result[i], " ")
@@ -159,7 +193,7 @@ func (c *freebsdContainer) getJailId(jname string) string {
 
 func (c *freebsdContainer) isJailExisted(jname, jid string) bool {
 	jid1 := c.getJailId(jname)
-	if jid == jid1 {
+	if jid != "" && jid == jid1 {
 		return true
 	}
 	return false
@@ -169,15 +203,11 @@ func (c *freebsdContainer) getInitProcessPid(jid string) (string, error) {
 	if !c.isJailExisted(c.id, jid) {
 		return "", fmt.Errorf("jail %s was destroyed", c.id)
 	}
-	cmd := exec.Command("/usr/sbin/jexec", jid, "/bin/cat", filepath.Join("/", initCmdPidFilename))
-	var out bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	out, err := c.execWrapper("/usr/sbin/jexec", jid, "/bin/cat", filepath.Join("/", initCmdPidFilename))
+	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(out.String()), nil
+	return strings.TrimSpace(out), nil
 }
 
 func (c *freebsdContainer) isInitProcessRunning(jid string) (bool, error) {
@@ -185,17 +215,10 @@ func (c *freebsdContainer) isInitProcessRunning(jid string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	cmd := exec.Command("/usr/sbin/jexec", jid, "/bin/ps", "-p", pid)
-	var out bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		fmt.Println(err)
+	if _, err := c.execWrapper("/usr/sbin/jexec", jid, "/bin/ps", "-p", pid); err != nil {
 		return false, nil
 	}
 	return true, nil
-
 }
 
 func (c *freebsdContainer) getInitProcessTime(jid string) (string, error) {
@@ -210,18 +233,14 @@ func (c *freebsdContainer) getInitProcessTime(jid string) (string, error) {
 	if !isRunning {
 		return "", fmt.Errorf("init process does not exist")
 	}
-	cmd := exec.Command("/usr/sbin/jexec", jid, "/bin/ps", "-o", "lstart", pid)
+	out, err := c.execWrapper("/usr/sbin/jexec", jid, "/bin/ps", "-o", "lstart", pid)
 	// The output should be like:
 	// STARTED
 	// Thu Jun  8 17:18:35 2017
-	var out bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	if err != nil {
 		return "", err
 	}
-	s := strings.Split(out.String(), "\n")
+	s := strings.Split(out, "\n")
 	return s[1], nil
 }
 
@@ -333,28 +352,19 @@ func (c *freebsdContainer) Run(process *Process) (err error) {
 	return nil
 }
 
-func (c *freebsdContainer) execWrapper(name string, args ...string) error {
+func (c *freebsdContainer) execWrapper(name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5 * time.Second)
+	defer cancel()
+
 	cmd := exec.Command(name, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		fmt.Println("Fail to exec %s", name)
-		return nil
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", err
 	}
-	var (
-		waitErr error
-		done    = make(chan bool)
-	)
-	go func() {
-		if err := cmd.Wait(); err != nil {
-			if _, ok := err.(*exec.ExitError); !ok {
-				waitErr = err
-			}
-		}
-		done <- true
-	}()
-	<-done
-	return waitErr
+	if ctx.Err() == context.DeadlineExceeded {
+		return "", fmt.Errorf("execution time out: ", ctx.Err())
+	}
+	return string(output), nil
 }
 
 func (c *freebsdContainer) Destroy() error {
@@ -362,17 +372,17 @@ func (c *freebsdContainer) Destroy() error {
 	defer c.m.Unlock()
 	existJid := c.getJailId(c.id)
 	if c.jailId != "" && existJid == c.jailId {
-		if err := c.execWrapper("/usr/sbin/jail", "-r", c.jailId); err != nil {
-			fmt.Println("Fail to stop jail")
+		if _, err := c.execWrapper("/usr/sbin/jail", "-r", c.jailId); err != nil {
+			return fmt.Errorf("Fail to stop jail")
 		}
 		if c.devPartition != "" {
-			if err := c.execWrapper("/sbin/umount", c.devPartition); err != nil {
-				fmt.Println("Fail to umount %s", c.devPartition)
+			if _, err := c.execWrapper("/sbin/umount", c.devPartition); err != nil {
+				return fmt.Errorf("Fail to umount %s", c.devPartition)
 			}
 		}
 		c.jailId = ""
 	} else {
-		fmt.Println("Error: no jail id or destroyed")
+		return fmt.Errorf("container %s has already been destroyed", c.id)
 	}
 	return c.state.destroy()
 }
@@ -381,18 +391,23 @@ func (c *freebsdContainer) Signal(s os.Signal, all bool) error {
 	existJid := c.getJailId(c.id)
 	if c.jailId != "" && existJid == c.jailId {
 		if all {
-			if err := c.execWrapper("/usr/sbin/jexec", c.jailId, "/bin/kill", "-KILL", "-1"); err != nil {
-				fmt.Println("Fail to kill all processes")
+			if _, err := c.execWrapper("/usr/sbin/jexec", c.jailId, "/bin/kill", "-KILL", "-1"); err != nil {
+				return fmt.Errorf("Fail to kill all processes")
 			}
-			c.jailId = ""
+			// remove the configuration if the jail was destroyed
+			j := c.getJailId(c.id)
+			if j == "" {
+				c.jailId = ""
+				return c.state.destroy()
+			}
 		} else {
 			initPid := strconv.Itoa(c.initProcessPid)
-			if err := c.execWrapper("/usr/sbin/jexec", c.jailId, "/bin/kill", "-KILL", initPid); err != nil {
-				fmt.Println("Fail to kill all processes")
+			if _, err := c.execWrapper("/usr/sbin/jexec", c.jailId, "/bin/kill", "-KILL", initPid); err != nil {
+				return fmt.Errorf("Fail to kill all processes")
 			}
 		}
 	} else {
-		fmt.Println("Error: no jail id")
+		return fmt.Errorf("container %s has already been destroyed", c.id)
 	}
 	return nil
 }
@@ -410,7 +425,6 @@ func (c *freebsdContainer) createExecFifo() error {
 	fifoName := filepath.Join(c.config.Rootfs, execFifoFilename)
 	if _, err := os.Stat(fifoName); err == nil {
 		c.deleteExecFifo()
-		fmt.Errorf("exec fifo %s already exists", fifoName)
 	}
 	oldMask := syscall.Umask(0000)
 	if err := syscall.Mkfifo(fifoName, 0622); err != nil {

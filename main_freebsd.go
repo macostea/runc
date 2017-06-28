@@ -11,6 +11,6 @@ var (
 	initCommand       cli.Command
 	pauseCommand      cli.Command
 	resumeCommand     cli.Command
-	psCommand         cli.Command
+	//psCommand         cli.Command
 	updateCommand     cli.Command
 )
