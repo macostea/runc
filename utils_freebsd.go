@@ -100,14 +100,13 @@ func startContainer(context *cli.Context, spec *specs.Spec, action CtAct, criuOp
 	}
 	r := &runner{
 		enableSubreaper: !context.Bool("no-subreaper"),
-		shouldDestroy:   false,
+		shouldDestroy:   true,
 		container:       container,
 		consoleSocket:   context.String("console-socket"),
 		detach:          context.Bool("detach"),
 		pidFile:         context.String("pid-file"),
 		preserveFDs:     context.Int("preserve-fds"),
 		action:          action,
-		criuOpts:        criuOpts,
 	}
 	return r.run(&spec.Process)
 }
@@ -152,8 +151,6 @@ type runner struct {
 	consoleSocket   string
 	container       libcontainer.Container
 	action          CtAct
-	//notifySocket    *notifySocket
-	criuOpts *libcontainer.CriuOpts
 }
 
 func (r *runner) checkTerminal(config *specs.Process) error {
@@ -181,11 +178,11 @@ func (r *runner) run(config *specs.Process) (int, error) {
 	var (
 		detach = r.detach || (r.action == CT_ACT_CREATE)
 	)
+	handler := newSignalHandler()
 	switch r.action {
 	case CT_ACT_CREATE:
 		err = r.container.Start(process)
 	case CT_ACT_RESTORE:
-		//err = r.container.Restore(process, r.criuOpts)
 	case CT_ACT_RUN:
 		err = r.container.Run(process)
 	default:
@@ -202,11 +199,15 @@ func (r *runner) run(config *specs.Process) (int, error) {
 			return -1, err
 		}
 	}
+	status, err := handler.forward(process)
+	if err != nil {
+		r.terminate(process)
+	}
 	if detach {
 		return 0, nil
 	}
 	r.destroy()
-	return 0, err
+	return status, err
 }
 
 func (r *runner) destroy() {
