@@ -6,7 +6,6 @@ var (
 	checkpointCommand cli.Command
 	eventsCommand     cli.Command
 	restoreCommand    cli.Command
-	//killCommand       cli.Command
 	initCommand       cli.Command
 	pauseCommand      cli.Command
 	resumeCommand     cli.Command

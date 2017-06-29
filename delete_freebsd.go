@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
-	//"time"
 
 	"github.com/opencontainers/runc/libcontainer"
 	"github.com/urfave/cli"
