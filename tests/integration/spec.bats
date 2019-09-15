@@ -51,7 +51,7 @@ function teardown() {
   [ ! -e "$HELLO_BUNDLE"/config.json ]
 
   # test generation of spec does not return an error
-  runc_spec --bundle "$HELLO_BUNDLE"
+  runc_spec "$HELLO_BUNDLE"
   [ "$status" -eq 0 ]
 
   # test generation of spec created our config.json (spec)
@@ -72,13 +72,16 @@ function teardown() {
   run git clone https://github.com/opencontainers/runtime-spec.git src/runtime-spec
   [ "$status" -eq 0 ]
 
-  SPEC_COMMIT=$(grep '^github.com/opencontainers/runtime-spec' ${TESTDIR}/../../vendor.conf | cut -d ' ' -f 2)
+  SPEC_COMMIT=$(grep '^github.com/opencontainers/runtime-spec' ${TESTDIR}/../../vendor.conf | tr -s ' ' | cut -d ' ' -f 2)
   run git -C src/runtime-spec reset --hard "${SPEC_COMMIT}"
 
   [ "$status" -eq 0 ]
   [ -e src/runtime-spec/schema/config-schema.json ]
 
   run bash -c "GOPATH='$GOPATH' go get github.com/xeipuuv/gojsonschema"
+  [ "$status" -eq 0 ]
+
+  run git -C "${GOPATH}/src/github.com/xeipuuv/gojsonschema" reset --hard 6637feb73ee44cd4640bb3def285c29774234c7f
   [ "$status" -eq 0 ]
 
   GOPATH="$GOPATH" go build src/runtime-spec/schema/validate.go
