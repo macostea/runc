@@ -2,10 +2,10 @@ package libcontainer
 
 import (
 	"fmt"
+	"github.com/opencontainers/runtime-spec/specs-go"
 	"os"
 	"path/filepath"
 
-	"github.com/opencontainers/runc/libcontainer/configs"
 	"github.com/opencontainers/runc/libcontainer/utils"
 )
 
@@ -44,7 +44,7 @@ func destroy(c *freebsdContainer) error {
 
 func runPoststopHooks(c *freebsdContainer) error {
 	if c.config.Hooks != nil {
-		s := configs.HookState{
+		s := &specs.State{
 			Version: c.config.Version,
 			ID:      c.id,
 			Bundle:  utils.SearchLabels(c.config.Labels, "bundle"),

@@ -58,7 +58,7 @@ func createContainer(context *cli.Context, id string, spec *specs.Spec) (libcont
 		NoPivotRoot:  context.Bool("no-pivot"),
 		NoNewKeyring: context.Bool("no-new-keyring"),
 		Spec:         spec,
-		Rootless:     isRootless(),
+		RootlessEUID: isRootless(),
 	})
 	if err != nil {
 		return nil, err

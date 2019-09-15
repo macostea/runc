@@ -17,6 +17,7 @@ import (
 
 	"github.com/opencontainers/runc/libcontainer/configs"
 	"github.com/opencontainers/runc/libcontainer/utils"
+	"github.com/opencontainers/runtime-spec/specs-go"
 )
 
 type freebsdContainer struct {
@@ -40,7 +41,7 @@ type State struct {
 	// Platform specific fields below here
 	DevPart string `json:"devpart"`
 	// Specifies if the container was started under the rootless mode.
-	Rootless bool `json:"rootless"`
+	RootlessEUID bool `json:"rootlesseuid"`
 }
 
 // A libcontainer container object.
@@ -73,6 +74,28 @@ func (c *freebsdContainer) State() (*State, error) {
 	c.m.Lock()
 	defer c.m.Unlock()
 	return c.currentState()
+}
+
+func (c *freebsdContainer) OCIState() (*specs.State, error) {
+	c.m.Lock()
+	defer c.m.Unlock()
+
+	bundle, annotations := utils.Annotations(c.config.Labels)
+	state := &specs.State{
+		Version:     specs.Version,
+		ID:          c.ID(),
+		Bundle:      bundle,
+		Annotations: annotations,
+	}
+	status, err := c.currentStatus()
+	if err != nil {
+		return nil, err
+	}
+	state.Status = status.String()
+	if status != Stopped {
+		state.Pid = c.initProcessPid
+	}
+	return state, nil
 }
 
 func (c *freebsdContainer) Config() configs.Config {
@@ -610,9 +633,9 @@ func (c *freebsdContainer) currentState() (*State, error) {
 			InitProcessStartTime: startTime,
 			Created:              c.created,
 		},
-		JailId:   c.jailId,
-		DevPart:  c.devPartition,
-		Rootless: c.config.Rootless,
+		JailId:       c.jailId,
+		DevPart:      c.devPartition,
+		RootlessEUID: c.config.RootlessEUID,
 	}
 	return state, nil
 }

@@ -15,7 +15,7 @@ type CreateOpts struct {
 	NoPivotRoot  bool
 	NoNewKeyring bool
 	Spec         *specs.Spec
-	Rootless     bool
+	RootlessEUID bool
 }
 
 // given specification and a cgroup name
@@ -45,8 +45,8 @@ func CreateLibcontainerConfig(opts *CreateOpts) (*configs.Config, error) {
 		Hostname:     spec.Hostname,
 		Labels:       append(labels, fmt.Sprintf("bundle=%s", cwd)),
 		NoNewKeyring: opts.NoNewKeyring,
-		Rootless:     opts.Rootless,
 		Version:      specs.Version,
+		RootlessEUID: opts.RootlessEUID,
 	}
 	return config, err
 }
